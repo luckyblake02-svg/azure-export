@@ -102,26 +102,52 @@ function resourceExport {
 
     debugLog "Beginning resource export." "Cyan"
 
-    #Apps are service principals in Azure
-    $azApps = try {az rest --method GET --url "https://graph.microsoft.com/v1.0/servicePrincipals"} catch {debugLog "API Request for Service Princpals failed." "Red" ; exit 1}
-    #Get locations
-    $azLoc = try {az rest --method get --url "https://management.azure.com/subscriptions/<subscription-id>/locations?api-version=2022-12-01"} catch {debugLog "API Request for Locations failed." "Red" ; exit 1}
-    #Get all users
-    $azUser = try {az rest --method get --url "https://graph.microsoft.com/v1.0/users"} catch {debugLog "API Request for Users failed." "Red" ; exit 1}
-    #Get all groups
-    $azGrp = try {az rest --method get --url "https://graph.microsoft.com/v1.0/groups"} catch {debugLog "API Request for Groups failed." "Red" ; exit 1}
-    #Get all role definitions
     if (!$enrolled) {
+        debugLog "Connecting to Graph" "Cyan"
         Connect-MgGraph -NoWelcome -Scopes "Application.Read.All", "Group.Read.All", "Policy.Read.All", "RoleManagement.Read.Directory", "User.Read.All"
     }
-    $azRoles = Get-MgRoleManagementDirectoryRoleDefinition
+
+    $azUser = @()
+    $azGrp = @()
+
+    #Apps are service principals in Azure
+    $azApps = try {Invoke-MgGraphRequest -uri "https://graph.microsoft.com/v1.0/servicePrincipals"} catch {debugLog "API Request for Service Princpals failed." "Red" ; exit 1}
+    debugLog "Applications have been downloaded" "Green"
+    #Get locations
+    $azLoc = try {az rest --method get --url "https://management.azure.com/subscriptions/<subscription-id>/locations?api-version=2022-12-01"} catch {debugLog "API Request for Locations failed." "Red" ; exit 1}
+    debugLog "Locations have been downloaded" "Green"
+    #Get all users
+    $resp = try {Invoke-MgGraphRequest -uri "https://graph.microsoft.com/v1.0/users?`$top=999"} catch {debugLog "API Request for Users failed." "Red" ; exit 1}
+    $azUser += $resp.Value
+    debugLog "First set of users have been downloaded" "Green"
+    #Only retrieves 999 results -> Page max. Check if nextLink is in the response, indicating a next page.
+    do {
+        #Set url to next link value
+        $uri = $resp.'@odata.nextLink'
+        $resp = try {Invoke-MgGraphRequest -uri $uri} catch {debugLog "API Request for next page of users failed." "Red" ; exit 1}
+        debugLog "Next set of users have been downloaded" "Green"
+        $azUser += $resp.Value
+    } while ($resp.'@odata.nextLink')
+    #Get all groups
+    $resp = try {Invoke-MgGraphRequest -uri "https://graph.microsoft.com/v1.0/groups?`$top=999"} catch {debugLog "API Request for Users failed." "Red" ; exit 1}
+    debugLog "First set of groups have been downloaded" "Green"
+    $azGrp += $resp.Value
+    #Only retrieves 999 results -> Page max. Check if nextLink is in the response, indicating a next page.
+    do {
+        #Set url to next link value
+        $uri = $resp.'@odata.nextLink'
+        $resp = try {Invoke-MgGraphRequest -uri $uri} catch {debugLog "API Request for next page of users failed." "Red" ; exit 1}
+        debugLog "Next set of groups have been downloaded" "Green"
+        $azGrp += $resp.Value
+    } while ($resp.'@odata.nextLink')
+    #Get all role definitions
+    $azRoles = try {Invoke-MgGraphRequest -Uri "https://graph.microsoft.com/v1.0/roleManagement/directory/roleDefinitions"} catch {debugLog "API request for role definitions failed." "Red" ; exit 1}
+    debugLog "Role definitions have been downloaded" "Green"
 
     #Convert all value fields from JSON
-    $azApps = ($azApps | ConvertFrom-Json).Value
+    $azApps = $azApps.Value
     $azLoc = ($azLoc | ConvertFrom-Json).Value
-    $azUser = ($azUser | ConvertFrom-Json).Value
-    $azGrp = ($azGrp | ConvertFrom-Json).Value
-
+    $azRoles = $azRoles.Value
 
     #Declare empty array for each object category
     $hrApp = @()
@@ -136,6 +162,7 @@ function resourceExport {
         }
     }
     $hrApp = $hrApp | Sort-Object Name
+    debugLog "Application array is complete" "Green"
     foreach ($loc in $azLoc) {
         $hrLoc += [PSCustomObject] @{
             Location = $loc.displayName
@@ -143,21 +170,23 @@ function resourceExport {
         }
     }
     $hrLoc = $hrLoc | Sort-Object Location
+    debugLog "Location array is complete" "Green"
     foreach ($rol in $azRoles) {
         $hrRole += [PSCustomObject] @{
             Name = $rol.DisplayName
+            Description = $rol.Description
             ID = $rol.Id
         }
     }
     $hrRole = $hrRole | Sort-Object Name
+    debugLog "Role array is complete" "Green"
 
     #Export everything
-    $hrApp | Out-File 'C:\temp\hashicorp\terraform\aztfexport\azureApps.txt'
-    $hrLoc | Out-File 'C:\temp\hashicorp\terraform\aztfexport\azureLocations.txt'
+    $hrApp | Export-Csv 'C:\temp\hashicorp\terraform\aztfexport\azureApps.csv' -NoTypeInformation
+    $hrLoc | Export-Csv 'C:\temp\hashicorp\terraform\aztfexport\azureLocations.csv' -NoTypeInformation
     $azUser | Out-File 'C:\temp\hashicorp\terraform\aztfexport\azureUsers.txt'
     $azGrp | Out-File 'C:\temp\hashicorp\terraform\aztfexport\azureGroups.txt'
-    $hrRole | Out-File 'C:\temp\hashicorp\terraform\aztfexport\azureRoles.txt'
-
+    $hrRole | Export-Csv 'C:\temp\hashicorp\terraform\aztfexport\azureRoles.csv' -NoTypeInformation
 }
 
 function debugLog {
